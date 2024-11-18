@@ -1,0 +1,10 @@
+*.txt filter=lfs diff=lfs merge=lfs -text
+src/data/wiki.txt filter=lfs diff=lfs merge=lfs -text
+git filter=lfs diff=lfs merge=lfs -text
+add filter=lfs diff=lfs merge=lfs -text
+experiments/src/data/test_char.txt filter=lfs diff=lfs merge=lfs -text
+experiments/src/data/test_word.txt filter=lfs diff=lfs merge=lfs -text
+experiments/src/data/train_char.txt filter=lfs diff=lfs merge=lfs -text
+experiments/src/data/train_word.txt filter=lfs diff=lfs merge=lfs -text
+experiments/src/data/validation_char.txt filter=lfs diff=lfs merge=lfs -text
+experiments/src/data/validation_word.txt filter=lfs diff=lfs merge=lfs -text
