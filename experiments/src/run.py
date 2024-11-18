@@ -1,6 +1,9 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 
+
+# run training
+
 """
 Usage:
     run.py --function=<function> --variant=<attention-model> --pretrain_corpus_path=<file> [--writing_params_path=<file>] [--finetune_corpus_path=<file>] [--reading_params_path=<file>] [--eval_corpus_path=<file>] [--outputs_path=<file>] [options]
@@ -28,99 +31,16 @@ from datetime import datetime
 import torch
 import numpy as np
 import sys
-
-import torch.nn as nn
 from tqdm import tqdm
-from torch.nn import functional as F
-import random
-random.seed(0)
-
-try:
-    from torch.utils.tensorboard import SummaryWriter
-except ImportError:
-    print("{}: Import failed!".format(__file__))
-    print("\033[1;31;40mRun the following command.\033[0m")
-    print()
-    print(">>> pip install tensorboard")
-    print()
-    sys.exit()
-    
-    
-"""
-##### Remove #####
-
-import sys
-from pathlib import Path
-import os
-import socket
-
-def set_project_root(directory):
-    hostname = socket.gethostname()
-    current_path = Path.cwd()
-
-    if "MacBook-Pro-4.fritz.box" or "MacBook-Pro-4.local"  in hostname:
-        project_root = Path(directory)
-    else:
-        project_root = None
-        for parent in current_path.parents:
-            if (parent / 'venv').exists():  # Assuming 'venv' indicates the project root
-                project_root = parent
-                break
-        if project_root is None:
-            project_root = current_path
-
-    project_root_str = str(project_root)
-    
-    # Add the root directory to sys.path
-    if project_root_str not in sys.path:
-        sys.path.insert(0, project_root_str)
-
-    # Use the current working directory in interactive environments
-    script_directory = str(current_path)
-    if script_directory not in sys.path:
-        sys.path.insert(0, script_directory)
-    
-    print(f"Project root set to: {project_root_str}")
-    print(f"Script directory set to: {script_directory}")
-
-
-set_project_root('/Users/alexanderkatz/Desktop/ML_NLP/Study_Courses/Stanford_AI/DL_NLP/Assignment_5/XCS224N-A5/src/submission')
-
-from model import GPT, GPTConfig
-from dataset import CharCorruptionDataset, NameDataset
-from trainer import TrainerConfig, Trainer
-from helper import initialize_vanilla_model, initialize_perceiver_model, finetune, pretrain, train
-
-
-
-def evaluate_places(filepath, predicted_places):
-
-  with open(filepath, encoding='utf-8') as fin:
-    lines = [x.strip().split('\t') for x in fin]
-    if len(lines[0]) == 1:
-      print('!!! No ground truth is provided, this will be done on the autograder, returning (0,0)')
-      return (0,0)
-    true_places = [x[1] for x in lines]
-    total = len(true_places)
-    assert total == len(predicted_places)
-    correct = len(list(filter(lambda x: x[0] == x[1],
-      zip(true_places, predicted_places))))
-    return (float(total),float(correct))
-
-
-#####
-
-"""
-
-
+from torch.utils.tensorboard import SummaryWriter
 
 from submission import (
-    GPT, GPTConfig, CharCorruptionDataset, NameDataset, TrainerConfig, Trainer, 
+    GPT, GPTConfig, TrainerConfig, Trainer, 
     evaluate_places, sample, initialize_vanilla_model, initialize_perceiver_model,
     finetune, pretrain, train
 )
 
-
+from submission.dataset import WikiDataset  # Import your WikiDataset
 
 def create_model(args, mconf):
     if args['--variant'] == 'vanilla':
@@ -139,18 +59,18 @@ def evaluate(args, pretrain_dataset, device, model):
 
     print(f"Evaluating using file: {args['--eval_corpus_path']}")
 
-    model.load_state_dict(torch.load(args['--reading_params_path'], weights_only=True))
+    model.load_state_dict(torch.load(args['--reading_params_path'], map_location=device))
     correct = 0
     total = 0
     with open(args['--outputs_path'], 'w', encoding='utf-8') as fout:
         predictions = []
         for line in tqdm(open(args['--eval_corpus_path'], encoding='utf-8')):
-            x = line.split('\t')[0]
-            x = x + '⁇'
+            x = line.strip().split()  # Tokenize input as words
+            x = x + [pretrain_dataset.MASK_TOKEN]  # Add mask token
             x = torch.tensor([pretrain_dataset.stoi[s] for s in x], dtype=torch.long)[None, ...].to(device)
             pred = sample(model, x, 32, sample=False)[0]
-            completion = ''.join([pretrain_dataset.itos[int(i)] for i in pred])
-            pred = completion.split('⁇')[1]
+            completion = ' '.join([pretrain_dataset.itos[int(i)] for i in pred])
+            pred = completion.split(pretrain_dataset.MASK_TOKEN)[1] if pretrain_dataset.MASK_TOKEN in completion else ""
             predictions.append(pred)
             fout.write(pred + '\n')
         total, correct = evaluate_places(args['--eval_corpus_path'], predictions)
@@ -163,11 +83,10 @@ def evaluate(args, pretrain_dataset, device, model):
 def setup_device():
     """ Setup the device used by PyTorch.
     """
-    
     device = torch.device("cpu")
     
     if torch.cuda.is_available(): 
-        device = torch.cuda.current_device()
+        device = torch.device("cuda")
     elif torch.backends.mps.is_available() and torch.backends.mps.is_built():
         device = torch.device("mps")
 
@@ -182,18 +101,11 @@ def main():
     device = setup_device()
 
     # Keep the block size 128
-    # NOTE!!!
-    # Why is the pretraining corpus always required (even if we're not pretraining?)
-    # It's because we're using it as a hack to always have the same vocabulary
-    # (that is, the same mapping from character to integer, and we build the 
-    # vocab from the pretraining corpus.)
     block_size = 128
-    text = open(args['--pretrain_corpus_path'], encoding='utf-8').read()
-    pretrain_dataset = CharCorruptionDataset(text, block_size)
+    wiki_dataset = WikiDataset(args['--pretrain_corpus_path'], block_size)
 
     # We don't suggest you change these hyperparameters, as they're known to work.
-    # use them for both the vanilla and the perceiver models
-    mconf = GPTConfig(pretrain_dataset.vocab_size, pretrain_dataset.block_size,
+    mconf = GPTConfig(wiki_dataset.vocab_size, wiki_dataset.block_size,
         n_layer=4, n_head=8, n_embd=256)
 
     # Create model
@@ -211,8 +123,7 @@ def main():
         float(args['--finetune_lr']),
         datetime_str))
 
-
-    if(args["--compile"] == True):
+    if args["--compile"]:
         try:
             attention_model = torch.compile(attention_model, backend=args["--backend"])
             print(f"Attention based model compiled")
@@ -225,17 +136,17 @@ def main():
         #TODO: Create new function to handle trainer initialization
         assert args['--finetune_corpus_path'] is not None
         assert args['--writing_params_path'] is not None
-        reading_params_path, finetune_corpus_path, finetune_lr  = args['--reading_params_path'], args['--finetune_corpus_path'], float(args['--finetune_lr'])
-        _, trainer_obj = finetune(reading_params_path, finetune_corpus_path, pretrain_dataset, block_size, attention_model, finetune_lr, writer)
+        reading_params_path, finetune_corpus_path, finetune_lr = args['--reading_params_path'], args['--finetune_corpus_path'], float(args['--finetune_lr'])
+        _, trainer_obj = finetune(reading_params_path, finetune_corpus_path, wiki_dataset, block_size, attention_model, finetune_lr, writer)
         train(attention_model, args['--writing_params_path'], trainer_obj)
     elif args['--function'] == "pretrain":
         assert args['--pretrain_corpus_path'] is not None
         assert args['--writing_params_path'] is not None
         pretrain_lr = float(args['--pretrain_lr'])
-        _, trainer_obj = pretrain(pretrain_dataset, block_size, attention_model, pretrain_lr, writer)
+        _, trainer_obj = pretrain(wiki_dataset, block_size, attention_model, pretrain_lr, writer)
         train(attention_model, args['--writing_params_path'], trainer_obj)
     else:
-        evaluate(args, pretrain_dataset, device, attention_model)
+        evaluate(args, wiki_dataset, device, attention_model)
     
 if __name__ == '__main__':
     main()
